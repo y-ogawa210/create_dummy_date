@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>ダミーデータ生成ツール（シンプル版）</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    h1 { font-size: 20px; margin-bottom: 10px; }
+    .form-section {
+      margin-bottom: 16px;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    label { display: inline-block; margin: 4px 8px 4px 0; }
+    input[type="number"] { width: 80px; }
+    table {
+      border-collapse: collapse;
+      margin-top: 20px;
+      width: 100%;
+      max-width: 1000px;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 4px 8px;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    th { background-color: #f0f0f0; }
+    .column-config {
+      display: grid;
+      grid-template-columns: 50px 1fr 120px 80px;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 4px;
+      font-size: 12px;
+    }
+    .btn {
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      border-radius: 4px;
+      border: 1px solid #666;
+      background-color: #f5f5f5;
+      margin-right: 4px;
+    }
+    .btn-primary {
+      background-color: #0078d4;
+      border-color: #005a9e;
+      color: #fff;
+    }
+    #status { font-size: 12px; color: #0078d4; margin-top: 4px; }
+  </style>
+</head>
+<body>
+
+<h1>ダミーデータ生成ツール（シンプル版）</h1>
+
+<div class="form-section">
+  <p><strong>最大列数：</strong>100列程度</p>
+  <p><strong>最大行数：</strong>20,000行程度</p>
+  <p style="font-size:12px;color:#666;">※大量データは描画が重くなる場合があります（生成はWeb Workerで高速化）。</p>
+</div>
+
+<div class="form-section">
+  <h2 style="font-size:16px;">基本設定</h2>
+  <label>列数：<input type="number" id="colCount" min="1" value="5"></label>
+  <label>行数：<input type="number" id="rowCount" min="1" value="100"></label>
+  <button class="btn" id="applyColCount">列設定を更新</button>
+  <div id="status"></div>
+</div>
+
+<div class="form-section">
+  <h2 style="font-size:16px;">列設定（文字列 or 数字）</h2>
+  <div id="columnsContainer"></div>
+</div>
+
+<div class="form-section">
+  <button class="btn btn-primary" id="generateBtn">ダミーデータ生成</button>
+  <button class="btn" id="downloadCsvBtn">CSV</button>
+  <button class="btn" id="downloadJsonBtn">JSON</button>
+  <button class="btn" id="downloadXlsxBtn">Excel</button>
+</div>
+
+<div id="output"></div>
+
+<script>
+  const colCountInput = document.getElementById('colCount');
+  const rowCountInput = document.getElementById('rowCount');
+  const columnsContainer = document.getElementById('columnsContainer');
+  const applyColCountBtn = document.getElementById('applyColCount');
+  const generateBtn = document.getElementById('generateBtn');
+  const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+  const downloadJsonBtn = document.getElementById('downloadJsonBtn');
+  const downloadXlsxBtn = document.getElementById('downloadXlsxBtn');
+  const outputDiv = document.getElementById('output');
+  const statusDiv = document.getElementById('status');
+
+  let generatedData = [];
+  let worker = null;
+
+  const workerCode = `
+    function randomString(length) {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+      let result = '';
+      for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return result;
+    }
+    function randomNumberString(length) {
+      let result = '';
+      for (let i = 0; i < length; i++) {
+        result += Math.floor(Math.random() * 10).toString();
+      }
+      return result;
+    }
+    onmessage = function(e) {
+      const { colSettings, rowCount } = e.data;
+      const data = [];
+      const header = colSettings.map(c => c.name);
+      data.push(header);
+      for (let r = 0; r < rowCount; r++) {
+        const row = colSettings.map(col => {
+          const len = col.length;
+          return col.type === 'number'
+            ? randomNumberString(len)
+            : randomString(len);
+        });
+        data.push(row);
+      }
+      postMessage({ data });
+    };
+  `;
+
+  function createWorker() {
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    return new Worker(url);
+  }
+
+  function renderColumnSettings() {
+    const colCount = parseInt(colCountInput.value, 10);
+    const existing = Array.from(columnsContainer.querySelectorAll('.column-config'))
+      .map(row => ({
+        name: row.querySelector('.col-name').value,
+        type: row.querySelector('.col-type').value,
+        length: row.querySelector('.col-length').value
+      }));
+
+    columnsContainer.innerHTML = '';
+
+    for (let i = 0; i < colCount; i++) {
+      const rowDiv = document.createElement('div');
+      rowDiv.className = 'column-config';
+
+      const label = document.createElement('span');
+      label.textContent = `列${i + 1}`;
+
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.className = 'col-name';
+      nameInput.value = existing[i]?.name || `列${i + 1}`;
+
+      const typeSelect = document.createElement('select');
+      typeSelect.className = 'col-type';
+      typeSelect.innerHTML = `
+        <option value="text">文字列</option>
+        <option value="number">数字</option>
+      `;
+      typeSelect.value = existing[i]?.type || 'text';
+
+      const lengthInput = document.createElement('input');
+      lengthInput.type = 'number';
+      lengthInput.min = '1';
+      lengthInput.value = existing[i]?.length || '5';
+      lengthInput.className = 'col-length';
+
+      rowDiv.appendChild(label);
+      rowDiv.appendChild(nameInput);
+      rowDiv.appendChild(typeSelect);
+      rowDiv.appendChild(lengthInput);
+
+      columnsContainer.appendChild(rowDiv);
+    }
+  }
+
+  renderColumnSettings();
+  applyColCountBtn.addEventListener('click', renderColumnSettings);
+
+  generateBtn.addEventListener('click', () => {
+    const rowCount = parseInt(rowCountInput.value, 10);
+    const colSettings = Array.from(columnsContainer.querySelectorAll('.column-config'))
+      .map(row => ({
+        name: row.querySelector('.col-name').value,
+        type: row.querySelector('.col-type').value,
+        length: parseInt(row.querySelector('.col-length').value, 10)
+      }));
+
+    statusDiv.textContent = '生成中...';
+
+    if (worker) worker.terminate();
+    worker = createWorker();
+
+    worker.onmessage = (e) => {
+      generatedData = e.data.data;
+      statusDiv.textContent = '生成完了';
+      renderTable();
+    };
+
+    worker.postMessage({ colSettings, rowCount });
+  });
+
+  function renderTable() {
+    outputDiv.innerHTML = '';
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const tr = document.createElement('tr');
+
+    generatedData[0].forEach(h => {
+      const th = document.createElement('th');
+      th.textContent = h;
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    generatedData.slice(1).forEach(row => {
+      const tr = document.createElement('tr');
+      row.forEach(cell => {
+        const td = document.createElement('td');
+        td.textContent = cell;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+
+    outputDiv.appendChild(table);
+  }
+
+  downloadCsvBtn.addEventListener('click', () => {
+    if (!generatedData.length) return alert('先に生成してください');
+    const csv = "\uFEFF" + generatedData.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'dummy.csv';
+    a.click();
+  });
+
+  downloadJsonBtn.addEventListener('click', () => {
+    if (!generatedData.length) return alert('先に生成してください');
+    const header = generatedData[0];
+    const rows = generatedData.slice(1);
+    const json = rows.map(r => {
+      const obj = {};
+      header.forEach((h, i) => obj[h] = r[i]);
+      return obj;
+    });
+    const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'dummy.json';
+    a.click();
+  });
+
+  downloadXlsxBtn.addEventListener('click', () => {
+    if (!generatedData.length) return alert('先に生成してください');
+    const ws = XLSX.utils.aoa_to_sheet(generatedData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'data');
+    XLSX.writeFile(wb, 'dummy.xlsx');
+  });
+</script>
+
+</body>
+</html>
